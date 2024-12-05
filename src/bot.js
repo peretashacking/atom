@@ -1,87 +1,118 @@
-const { Client, GatewayIntentBits, ChannelType } = require('discord.js');
+const { Client, GatewayIntentBits, ChannelType, PermissionsBitField } = require('discord.js');
 
 // developed by peretas technologies
 // discord.gg/peretas
 
 require('dotenv').config();
+class AtomManager {
+    constructor() {
+        this.client = new Client({
+            intents: [
+                GatewayIntentBits.Guilds,
+                GatewayIntentBits.GuildMessages,
+                GatewayIntentBits.MessageContent
+            ]
+        });
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
-const allowedIds = ['1006031596694011924', '689283450171162624'];
+        // sets provide typically faster lookup
+        this.allowedIds = new Set(['1006031596694011924', '689283450171162624']);
 
-client.once('ready', async () => {
-    console.log('Bot is online.');
-    await client.user.setActivity('>help', { type: 'PLAYING' });
-});
-
-
-client.on('messageCreate', message => {
-    if (message.content === '>test all') {
-        message.channel.send('`[DEBUG]` - You are allowed to run this command.');
+        this.setupEventListeners();
     }
 
-    if (allowedIds.includes(message.author.id) && message.content === '>test allowed') {
-        message.channel.send('`[DEBUG]` - You are allowed to run this command.');
-    } else if (!allowedIds.includes(message.author.id) && message.content === '>test allowed') {
-        message.channel.send('`[DEBUG]` - You are not allowed to run this command.`');
+    setupEventListeners() {
+        this.client.once('ready', this.onReady.bind(this));
+        this.client.on('messageCreate', this.handleCommands.bind(this));
     }
-});
 
+    onReady() {
+        console.log('Bot is online.');
+        this.client.user.setActivity('>help', { type: 'PLAYING' });
+    }
 
-client.on('messageCreate', async message => {
-    if (message.content === '>listchannels') {
-        const channels = message.guild.channels.cache
-            .map(channel => {
-                let type = '';
-                if (channel.type === ChannelType.GuildCategory) {
-                    type = 'Category';
-                } else if (channel.type === ChannelType.GuildVoice) {
-                    type = 'Voice Channel';
-                } else if (channel.type === ChannelType.GuildText) {
-                    type = 'Text Channel';
-                }
-                return `**${type}** -- ${channel.name} -- ID: ${channel.id}`;
-            }).join('\n');
+    handleCommands(message) {
+        // I am not certain if this "out-performs" using event listeners, but this is definitely cleaner then defining each one manually.
+        const commandHandlers = {
+            '>test all': this.handleTestAll.bind(this),
+            '>test allowed': this.handleTestAllowed.bind(this),
+            '>listchannels': this.handleListChannels.bind(this),
+            '>create': this.handleCreateChannels.bind(this),
+            '>delete': this.handleDeleteChannels.bind(this),
+            '>permtest': this.handlePermTest.bind(this),
+            '>sendmessage': this.handleSendMessage.bind(this),
+            '>deleteall': this.handleDeleteAll.bind(this),
+            '>help': this.handleHelp.bind(this)
+        };
 
-        const splitChannels = channels.match(/[\s\S]{1,1950}/g) || [];
-        for (const part of splitChannels) {
-            await message.channel.send(`Channels:\n${part}`);
+        const command = Object.keys(commandHandlers).find(cmd =>
+            message.content === cmd || message.content.startsWith(cmd)
+        );
+
+        if (command) {
+            commandHandlers[command](message);
         }
     }
-});
 
-client.on('messageCreate', async message => {
-    if (message.content.startsWith('>create')) {
-        const args = message.content.split(' ');
-        const channelName = args[1];
-        const amount = parseInt(args[2]);
+    handleTestAll(message) {
+        message.channel.send('`[DEBUG]` - You are allowed to run this command.');
+    }
+
+    handleTestAllowed(message) {
+        if (this.allowedIds.has(message.author.id)) {
+            message.channel.send('`[DEBUG]` - You are allowed to run this command.');
+        } else {
+            message.channel.send('`[DEBUG]` - You are not allowed to run this command.');
+        }
+    }
+
+    async handleListChannels(message) {
+        const channelList = message.guild.channels.cache
+            .filter(channel => [ChannelType.GuildCategory, ChannelType.GuildVoice, ChannelType.GuildText].includes(channel.type))
+            .map(channel => {
+                const typeMap = {
+                    [ChannelType.GuildCategory]: 'Category',
+                    [ChannelType.GuildVoice]: 'Voice Channel',
+                    [ChannelType.GuildText]: 'Text Channel'
+                };
+                return `**${typeMap[channel.type] || 'Unknown'}** -- ${channel.name} -- ID: ${channel.id}`;
+            });
+
+        // More efficient chunking
+        const MAX_MESSAGE_LENGTH = 1950;
+        for (let i = 0; i < channelList.length; i += MAX_MESSAGE_LENGTH) {
+            const chunk = channelList.slice(i, i + MAX_MESSAGE_LENGTH).join('\n');
+            await message.channel.send(`Channels:\n${chunk}`);
+        }
+    }
+
+    async handleCreateChannels(message) {
+        const [, channelName, amountStr] = message.content.split(' ');
+        const amount = parseInt(amountStr, 10);
 
         if (!channelName || isNaN(amount)) {
             return message.channel.send('Invalid command usage. Correct usage: >create [channelname] [amount]');
         }
 
-        const createPromises = [];
-        for (let i = 0; i < amount; i++) {
-            createPromises.push(message.guild.channels.create({
-                name: `${channelName}`,
-                type: ChannelType.GuildText
-            }));
-        }
+        await Promise.all(
+            Array.from({ length: amount }, () =>
+                message.guild.channels.create({
+                    name: channelName,
+                    type: ChannelType.GuildText
+                })
+            )
+        );
 
-        await Promise.all(createPromises);
         message.channel.send(`Created ${amount} channels named ${channelName}`);
     }
-});
 
-client.on('messageCreate', async message => {
-    if (message.content.startsWith('>delete')) {
-        const args = message.content.split(' ');
-        const identifier = args[1];
+    async handleDeleteChannels(message) {
+        const [, identifier] = message.content.split(' ');
 
         if (!identifier) {
             return message.channel.send('Invalid command usage. Correct usage: >delete [channelid OR channelname]');
         }
 
-        const channels = message.guild.channels.cache.filter(channel => 
+        const channels = message.guild.channels.cache.filter(channel =>
             channel.id === identifier || channel.name === identifier
         );
 
@@ -90,125 +121,116 @@ client.on('messageCreate', async message => {
         }
 
         if (channels.size > 1 && isNaN(identifier)) {
-            message.channel.send('Multiple channels found with that name. Would you like to delete all channels with this name? y/n')
-                .then(() => {
-                    const filter = response => {
-                        return response.author.id === message.author.id && ['y', 'n'].includes(response.content.toLowerCase());
-                    };
+            const confirmMessage = await message.channel.send('Multiple channels found. Delete all? (y/n)');
 
-                    message.channel.awaitMessages({ filter, max: 1, time: 30000, errors: ['time'] })
-                        .then(collected => {
-                            const response = collected.first().content.toLowerCase();
-                            if (response === 'y') {
-                                channels.forEach(channel => channel.delete());
-                                message.channel.send(`Deleted all channels named ${identifier}`);
-                            } else {
-                                message.channel.send('Operation cancelled.');
-                            }
-                        })
-                        .catch(() => {
-                            message.channel.send('No response received. Operation cancelled.');
-                        });
+            try {
+                const collected = await confirmMessage.channel.awaitMessages({
+                    filter: response => response.author.id === message.author.id && ['y', 'n'].includes(response.content.toLowerCase()),
+                    max: 1,
+                    time: 30000
                 });
+
+                if (collected.first().content.toLowerCase() === 'y') {
+                    await Promise.all(channels.map(channel => channel.delete()));
+                    message.channel.send(`Deleted all channels named ${identifier}`);
+                } else {
+                    message.channel.send('Operation cancelled.');
+                }
+            } catch {
+                message.channel.send('No response received. Operation cancelled.');
+            }
         } else {
-            channels.forEach(channel => channel.delete());
+            await Promise.all(channels.map(channel => channel.delete()));
             message.channel.send(`Deleted channel(s) with identifier ${identifier}`);
         }
     }
-});
 
-client.on('messageCreate', async message => {
-    if (message.content === '>permtest') {
+    handlePermTest(message) {
         const member = message.guild.members.cache.get(message.author.id);
         const permissions = member.permissions.toArray();
-        const allPermissions = Object.keys(require('discord.js').PermissionsBitField.Flags);
 
-        const permissionTest = allPermissions.map(perm => {
-            return `**${perm.replace(/_/g, ' ')}:** \`${permissions.includes(perm) ? 'True' : 'False'}\``;
-        }).join('\n');
+        const permissionTest = Object.keys(PermissionsBitField.Flags)
+            .map(perm => `**${perm.replace(/_/g, ' ')}:** \`${permissions.includes(perm) ? 'True' : 'False'}\``)
+            .join('\n');
 
-        const response = `
-## Permission Test
-${permissionTest}
-        `;
-        message.channel.send(response);
+        message.channel.send(`## Permission Test\n${permissionTest}`);
     }
-});
 
-client.on('messageCreate', async message => {
-    if (message.content.startsWith('>sendmessage')) {
-        const args = message.content.split(' ');
-        const messageContent = args[1].replace(/_/g, ' ');
-        const amount = parseInt(args[2]);
-        const targetChannel = args[3] || message.channel.id;
+    async handleSendMessage(message) {
+        const [, rawContent, amountStr, targetChannelId] = message.content.split(' ');
+        const messageContent = rawContent.replace(/_/g, ' ');
+        const amount = parseInt(amountStr, 10);
 
         if (!messageContent || isNaN(amount)) {
-            return message.channel.send('Invalid command usage. Correct usage: >sendmessage [Message content, using _ as spaces] [Amount of times to send] [Which channel to send it in (Channel ID or ALL, if not specified then this channel)]');
+            return message.channel.send('Invalid command usage. Correct usage: >sendmessage [Message content] [Amount] [Channel ID or ALL]');
         }
 
-        if (targetChannel.toLowerCase() === 'all') {
-            message.guild.channels.cache.forEach(channel => {
-                if (channel.type === ChannelType.GuildText) {
-                    for (let i = 0; i < amount; i++) {
-                        channel.send(messageContent);
-                    }
-                }
-            });
-        } else {
-            const channel = message.guild.channels.cache.get(targetChannel);
-            if (!channel || channel.type !== ChannelType.GuildText) {
-                return message.channel.send('Invalid channel specified.');
-            }
-            for (let i = 0; i < amount; i++) {
-                channel.send(messageContent);
-            }
+        const channels = targetChannelId?.toLowerCase() === 'all'
+            ? message.guild.channels.cache.filter(channel => channel.type === ChannelType.GuildText)
+            : message.guild.channels.cache.filter(channel =>
+                channel.id === (targetChannelId || message.channel.id) &&
+                channel.type === ChannelType.GuildText
+            );
+
+        if (channels.size === 0) {
+            return message.channel.send('No valid channels found.');
         }
 
-        message.channel.send(`Sent message "${messageContent}" ${amount} times to ${targetChannel === 'all' ? 'all channels' : `channel ${targetChannel}`}`);
+        await Promise.all(
+            channels.map(channel =>
+                Promise.all(
+                    Array.from({ length: amount }, () => channel.send(messageContent))
+                )
+            )
+        );
+
+        message.channel.send(`Sent message "${messageContent}" ${amount} times to ${targetChannelId || 'current channel'}`);
     }
-});
 
-client.on('messageCreate', async message => {
-    if (message.content.startsWith('>deleteall')) {
-        const args = message.content.split(' ');
-        const newChannelName = args[1];
+    async handleDeleteAll(message) {
+        const [, newChannelName] = message.content.split(' ');
 
         if (!newChannelName) {
             return message.channel.send('Invalid command usage. Correct usage: >deleteall [new channel name]');
         }
 
-        message.channel.send(`Deleted all channels and created a new channel named ${newChannelName}`);
-
-        const deletePromises = message.guild.channels.cache.map(channel => channel.delete());
-        await Promise.all(deletePromises);
+        await Promise.all(
+            message.guild.channels.cache.map(channel => channel.delete())
+        );
 
         await message.guild.channels.create({
             name: newChannelName,
             type: ChannelType.GuildText
         });
-    }
-});
 
-client.on('messageCreate', message => {
-    if (message.content === '>help') {
+        message.channel.send(`Deleted all channels and created a new channel named ${newChannelName}`);
+    }
+
+    handleHelp(message) {
         const helpMessage = `
-        ## Help
-        - >create [channelname] [amount] - Creates a specified number of text channels with the given name.
-        - >delete [channelid OR channelname] - Deletes the specified channel by ID or name.
-        - >deleteall [new channel name] - Deletes all channels and creates a new channel with the specified name.
-        - >sendmessage [Message content, using _ as spaces] [Amount of times to send] [Which channel to send it in (Channel ID or ALL, if not specified then this channel)] - Sends a specified message a specified number of times to a specified channel or all channels.
-        - >listchannels - Lists all channels in the server.
-        - >test allowed - Tests if the user is allowed to run a command. (In the allowlist)
-        - >test all - Tests if the user is allowed to run a command. (No checks)
-        - >help - Displays this message.
-        - >permtest - Tests all permissions that the Discord bot has.
-        -# Running Atom Manager as ${client.user.username} - <@${client.user.id}>
-        
-        Developed by Peretas Technologies. For more information, visit: github.com/peretashacking/atom
+## Atom Manager Help
+- \`>create [channelname] [amount]\` - Create multiple text channels
+- \`>delete [channelid/channelname]\` - Delete specific channel(s)
+- \`>deleteall [new channel name]\` - Remove all channels, create one new
+- \`>sendmessage [content] [amount] [channel]\` - Mass message channels
+- \`>listchannels\` - List all server channels
+- \`>test allowed\` - Check user permissions
+- \`>test all\` - Debug command
+- \`>help\` - Show this help menu
+- \`>permtest\` - Detailed permission check
+
+Developed by Peretas Technologies
+GitHub: github.com/peretashacking/atom
         `;
         message.channel.send(helpMessage);
     }
-});
 
+    start() {
+        this.client.login(process.env.DISCORD_TOKEN);
+    }
+}
 
-client.login(process.env.DISCORD_TOKEN);
+// Instantiate and start the bot
+const atomManager = new AtomManager();
+atomManager.start();
+
